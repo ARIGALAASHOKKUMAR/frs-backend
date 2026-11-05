@@ -1,8 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
-backend/models/
-backend/data/
 node_modules/
 .expo/
 .env
