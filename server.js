@@ -7,6 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { pool, initializeDatabase } = require("./db");
 const auth = require("./auth");
+const attendanceRoutes = require("./attendanceRoutes");
 
 const app = express();
 const PORT = 3001;
@@ -20,7 +21,7 @@ app.post("/api/auth/logout", auth.requireAuth, async (req, res) => {
   await pool.query("DELETE FROM auth_sessions WHERE token=$1", [req.sessionToken]);
   res.json({ success: true });
 });
-app.use("/api/attendance", require("./attendanceRoutes"));
+app.use("/api/attendance", attendanceRoutes);
 app.use("/api/leaves", require("./leaveRoutes"));
 app.use("/api/employees", require("./employeeRoutes"));
 app.use("/api/profile", require("./profileRoutes"));
@@ -140,6 +141,24 @@ async function getFaceDescriptor(buffer) {
   return Array.from(detection.descriptor);
 }
 
+async function compareFaceForEmployee(employeeId, imageBuffer) {
+  const { rows } = await pool.query(
+    "SELECT descriptor FROM face_templates WHERE employee_id = $1",
+    [employeeId]
+  );
+  if (!rows.length) return null;
+
+  const capturedDescriptor = await getFaceDescriptor(imageBuffer);
+  const distance = faceapi.euclideanDistance(rows[0].descriptor, capturedDescriptor);
+  const threshold = 0.4;
+
+  return {
+    matched: distance < threshold,
+    distance: Number(distance.toFixed(4)),
+    threshold,
+  };
+}
+
 // Store descriptors per employee; the comparison math remains unchanged.
 async function saveFaceData(employeeId, data) {
   await pool.query(
@@ -233,11 +252,9 @@ app.post(
   checkModels,
   async (req, res) => {
     try {
-      const { rows } = await pool.query(
-        "SELECT descriptor FROM face_templates WHERE employee_id = $1",
-        [req.employeeId]
-      );
-      if (!rows.length) {
+      const imageBuffer = getImageBuffer(req.body.image);
+      const result = await compareFaceForEmployee(req.employeeId, imageBuffer);
+      if (!result) {
         return res.status(400).json({
           success: false,
           matched: false,
@@ -245,26 +262,10 @@ app.post(
         });
       }
 
-      const imageBuffer = getImageBuffer(req.body.image);
-
-      const capturedDescriptor =
-        await getFaceDescriptor(imageBuffer);
-
-      const distance = faceapi.euclideanDistance(
-        rows[0].descriptor,
-        capturedDescriptor
-      );
-
-      const threshold = 0.4;
-
-      const matched = distance < threshold;
-
       return res.status(200).json({
         success: true,
-        matched,
-        distance: Number(distance.toFixed(4)),
-        threshold,
-        message: matched
+        ...result,
+        message: result.matched
           ? "Face matched successfully"
           : "Face does not match",
       });
@@ -272,6 +273,55 @@ app.post(
     } catch (error) {
       console.error("Face comparison error:", error.message);
 
+      return res.status(400).json({
+        success: false,
+        matched: false,
+        message: error.message,
+      });
+    }
+  }
+);
+
+// Compare the face and record attendance in one request to avoid a second mobile round trip.
+app.post(
+  "/api/face/verify-attendance",
+  auth.requireAuth,
+  checkModels,
+  async (req, res) => {
+    try {
+      const action = req.body?.action;
+      if (action !== "clock-in" && action !== "clock-out") {
+        return res.status(400).json({ success: false, message: "Invalid attendance action." });
+      }
+
+      const imageBuffer = getImageBuffer(req.body.image);
+      const match = await compareFaceForEmployee(req.employeeId, imageBuffer);
+      if (!match) {
+        return res.status(400).json({
+          success: false,
+          matched: false,
+          message: "No registered face found. Please register first.",
+        });
+      }
+      if (!match.matched) {
+        return res.json({
+          success: true,
+          ...match,
+          message: "Face does not match. Attendance was not recorded.",
+        });
+      }
+
+      const attendance = await attendanceRoutes.markAttendance(req.employeeId, action);
+      return res.status(attendance.status).json({
+        ...attendance.body,
+        ...match,
+        matched: true,
+        message: attendance.body.success
+          ? "Face matched and attendance recorded."
+          : attendance.body.message,
+      });
+    } catch (error) {
+      console.error("Face attendance verification error:", error.message);
       return res.status(400).json({
         success: false,
         matched: false,
