@@ -3,7 +3,6 @@ const express = require("express");
 const cors = require("cors");
 const faceapi = require("face-api.js");
 const canvas = require("canvas");
-const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const { pool, initializeDatabase } = require("./db");
@@ -11,10 +10,6 @@ const auth = require("./auth");
 
 const app = express();
 const PORT = 3001;
-const faceUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
-});
 
 // Middleware
 app.use(cors());
@@ -127,11 +122,6 @@ function getImageBuffer(base64Image) {
   return buffer;
 }
 
-function getRequestImageBuffer(req) {
-  if (req.file?.buffer?.length) return req.file.buffer;
-  return getImageBuffer(req.body?.image);
-}
-
 // Generate face descriptor
 async function getFaceDescriptor(buffer) {
   const image = await canvas.loadImage(buffer);
@@ -206,10 +196,9 @@ app.post(
   "/api/face/register",
   auth.requireAuth,
   checkModels,
-  faceUpload.single("image"),
   async (req, res) => {
     try {
-      const imageBuffer = getRequestImageBuffer(req);
+      const imageBuffer = getImageBuffer(req.body.image);
 
       const descriptor = await getFaceDescriptor(imageBuffer);
 
@@ -242,7 +231,6 @@ app.post(
   "/api/face/compare",
   auth.requireAuth,
   checkModels,
-  faceUpload.single("image"),
   async (req, res) => {
     try {
       const { rows } = await pool.query(
@@ -257,7 +245,7 @@ app.post(
         });
       }
 
-      const imageBuffer = getRequestImageBuffer(req);
+      const imageBuffer = getImageBuffer(req.body.image);
 
       const capturedDescriptor =
         await getFaceDescriptor(imageBuffer);
