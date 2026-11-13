@@ -44,6 +44,10 @@ async function initializeDatabase() {
       clock_in TIMESTAMPTZ NOT NULL DEFAULT NOW(), clock_out TIMESTAMPTZ,
       created_at DATE NOT NULL DEFAULT CURRENT_DATE
     );
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS clock_in_latitude DOUBLE PRECISION;
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS clock_in_longitude DOUBLE PRECISION;
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS clock_out_latitude DOUBLE PRECISION;
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS clock_out_longitude DOUBLE PRECISION;
     CREATE INDEX IF NOT EXISTS attendance_employee_date_idx ON attendance(employee_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS leave_requests (
       id BIGSERIAL PRIMARY KEY, employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
