@@ -5,6 +5,42 @@ const { requireAdmin } = require("./auth");
 const router = express.Router();
 
 router.use(requireAuth);
+router.get("/team-status", requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    `WITH today AS (
+       SELECT (NOW() AT TIME ZONE 'Asia/Kolkata')::date AS day
+     ), attendance_today AS (
+       SELECT DISTINCT ON (a.employee_id) a.employee_id,
+              a.clock_in AS "clockIn", a.clock_out AS "clockOut"
+       FROM attendance a, today t
+       WHERE (a.clock_in AT TIME ZONE 'Asia/Kolkata')::date = t.day
+       ORDER BY a.employee_id, a.clock_in DESC
+     ), approved_status AS (
+       SELECT DISTINCT ON (l.employee_id) l.employee_id,
+              l.leave_type AS "leaveType"
+       FROM leave_requests l, today t
+       WHERE l.status='Approved' AND l.from_date <= t.day AND l.to_date >= t.day
+       ORDER BY l.employee_id, l.reviewed_at DESC NULLS LAST, l.created_at DESC
+     )
+     SELECT e.id AS "employeeId", e.name, a."clockIn", a."clockOut",
+            s."leaveType",
+            CASE
+              WHEN s.employee_id IS NOT NULL AND (s."leaveType" ILIKE '%work from home%' OR s."leaveType" ILIKE '%wfh%') THEN 'WFH'
+              WHEN s.employee_id IS NOT NULL THEN 'Leave'
+              WHEN a.employee_id IS NOT NULL THEN 'In Office'
+              ELSE 'Not Clocked In'
+            END AS status,
+            TO_CHAR(t.day, 'YYYY-MM-DD') AS date
+     FROM employees e
+     CROSS JOIN today t
+     LEFT JOIN attendance_today a ON a.employee_id=e.id
+     LEFT JOIN approved_status s ON s.employee_id=e.id
+     WHERE e.role='employee'
+     ORDER BY e.name`
+  );
+  res.json({ success: true, date: rows[0]?.date || null, employees: rows });
+});
+
 router.get("/admin-history", requireAdmin, async (req, res) => {
   const { employeeId, from, to } = req.query;
   const validDate = (value) => {
