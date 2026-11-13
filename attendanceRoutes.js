@@ -11,6 +11,7 @@ const ATTENDANCE_SITES = [
   { name: "Nidhi Bhavan, Mangalagiri", latitude: 16.420984, longitude: 80.558304 },
 ];
 
+
 function distanceMeters(lat1, lon1, lat2, lon2) {
   const radians = (degrees) => (degrees * Math.PI) / 180;
   const dLat = radians(lat2 - lat1);
@@ -53,6 +54,12 @@ async function getPreviousDayEligibility(employeeId) {
            AND a.clock_in IS NOT NULL AND a.clock_out IS NOT NULL
        ) AS "completeAttendance",
        EXISTS (
+         SELECT 1 FROM attendance a
+         WHERE a.employee_id=$1
+           AND (a.clock_in AT TIME ZONE 'Asia/Kolkata')::date=p.day
+           AND a.clock_in IS NOT NULL
+       ) AS "hasClockIn",
+       EXISTS (
          SELECT 1 FROM leave_requests l
          WHERE l.employee_id=$1 AND l.status IN ('Pending', 'Approved')
            AND l.from_date <= p.day AND l.to_date >= p.day
@@ -66,11 +73,15 @@ async function getPreviousDayEligibility(employeeId) {
 router.get("/clock-in-eligibility", async (req, res) => {
   const previousDay = await getPreviousDayEligibility(req.employeeId);
   const eligible = previousDay.completeAttendance || previousDay.hasRequest;
+  const reason = eligible ? null : previousDay.hasClockIn ? "missed_clock_out" : "missed_clock_in";
   res.json({
     success: true,
     eligible,
     previousDate: previousDay.date,
-    message: eligible ? null : `There is no complete attendance or request for ${previousDay.date}. Apply for leave, Work From Home, or attendance regularization before clocking in.`,
+    reason,
+    message: eligible ? null : reason === "missed_clock_out"
+      ? `You clocked in on ${previousDay.date} but did not clock out. Submit an attendance regularization to continue.`
+      : `No clock-in was recorded on ${previousDay.date}. Submit a leave request to continue.`,
   });
 });
 
@@ -160,7 +171,9 @@ router.post("/clock-in", validateAttendanceLocation, async (req, res) => {
   if (!previousDay.completeAttendance && !previousDay.hasRequest) {
     return res.status(409).json({
       success: false,
-      message: `There is no complete attendance or request for ${previousDay.date}. Apply for leave, Work From Home, or attendance regularization before clocking in.`,
+      message: previousDay.hasClockIn
+        ? `You clocked in on ${previousDay.date} but did not clock out. Submit an attendance regularization to continue.`
+        : `No clock-in was recorded on ${previousDay.date}. Submit a leave request to continue.`,
     });
   }
   const { rows: today } = await pool.query(
